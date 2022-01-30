@@ -185,7 +185,7 @@ private:
 	UPROPERTY()
 	UWidgetComponent* TargetLockedOnWidgetComponent;
 
-	UPROPERTY()
+	UPROPERTY(Replicated)
 	AActor* LockedOnTargetActor;
 
 	FTimerHandle LineOfSightBreakTimerHandle;
@@ -193,6 +193,7 @@ private:
 
 	bool bIsBreakingLineOfSight = false;
 	bool bIsSwitchingTarget = false;
+	UPROPERTY(Replicated)
 	bool bTargetLocked = false;
 	float ClosestTargetDistance = 0.0f;
 
@@ -239,6 +240,21 @@ private:
 	bool ShouldSwitchTargetActor(float AxisValue);
 
 	static bool TargetIsTargetable(const AActor* Actor);
+
+	//~ Replication
+	UFUNCTION(Server, Reliable)
+	void ServerTargetLockOn(AActor* TargetToLockOn);
+	UFUNCTION(Server, Reliable)
+	void ServerTargetLockOff();
+
+	UFUNCTION(NetMulticast, Reliable)
+	void ClientTargetLockOn(AActor* TargetToLockOn);
+
+	UFUNCTION(NetMulticast, Reliable)
+	void ClientTargetLockOff();
+
+	void TargetLockOn_Internal(AActor* TargetToLockOn);
+	void TargetLockOff_Internal();
 
 	/**
 	 *  Sets up cached Owner PlayerController from Owner Pawn.

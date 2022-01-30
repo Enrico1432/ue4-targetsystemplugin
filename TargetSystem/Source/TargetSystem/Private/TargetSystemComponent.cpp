@@ -12,6 +12,8 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 
+#include "Net/UnrealNetwork.h"
+
 // Sets default values for this component's properties
 UTargetSystemComponent::UTargetSystemComponent()
 {
@@ -20,6 +22,13 @@ UTargetSystemComponent::UTargetSystemComponent()
 	LockedOnWidgetClass = StaticLoadClass(UObject::StaticClass(), nullptr, TEXT("/TargetSystem/UI/WBP_LockOn.WBP_LockOn_C"));
 	TargetableActors = APawn::StaticClass();
 	TargetableCollisionChannel = ECollisionChannel::ECC_Pawn;
+}
+
+void UTargetSystemComponent::GetLifetimeReplicatedProps( TArray<FLifetimeProperty>& OutLifetimeProps ) const
+{
+	Super::GetLifetimeReplicatedProps( OutLifetimeProps );
+	DOREPLIFETIME(UTargetSystemComponent, LockedOnTargetActor);
+	DOREPLIFETIME(UTargetSystemComponent, bTargetLocked);
 }
 
 // Called when the game starts
@@ -180,7 +189,7 @@ void UTargetSystemComponent::TargetActorWithAxisInput(const float AxisValue)
 			SwitchingTargetTimerHandle.Invalidate();
 		}
 
-		TargetLockOff();
+		TargetLockOff_Internal();
 		LockedOnTargetActor = ActorToTarget;
 		TargetLockOn(ActorToTarget);
 
@@ -313,6 +322,14 @@ bool UTargetSystemComponent::ShouldSwitchTargetActor(const float AxisValue)
 
 void UTargetSystemComponent::TargetLockOn(AActor* TargetToLockOn)
 {
+	ServerTargetLockOn(TargetToLockOn);
+	// if (GetOwnerRole() == ROLE_Authority) {
+	// 	TargetLockOn_Internal(TargetToLockOn);
+	// }
+}
+
+void UTargetSystemComponent::TargetLockOn_Internal(AActor* TargetToLockOn)
+{
 	if (!IsValid(TargetToLockOn))
 	{
 		return;
@@ -344,9 +361,18 @@ void UTargetSystemComponent::TargetLockOn(AActor* TargetToLockOn)
 	{
 		OnTargetLockedOn.Broadcast(TargetToLockOn);
 	}
+	LockedOnTargetActor = TargetToLockOn;
 }
 
 void UTargetSystemComponent::TargetLockOff()
+{
+	ServerTargetLockOff();
+	// if (GetOwnerRole() != ROLE_Authority) {
+	// 	TargetLockOff_Internal();
+	// }
+}
+
+void UTargetSystemComponent::TargetLockOff_Internal()
 {
 	// Recast PlayerController in case it wasn't already setup on Begin Play (local split screen)
 	SetupLocalPlayerController();
@@ -359,8 +385,10 @@ void UTargetSystemComponent::TargetLockOff()
 
 	if (LockedOnTargetActor)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("LockedOnTargetActor is valid"));
 		if (bShouldControlRotation)
 		{
+			UE_LOG(LogTemp, Warning, TEXT("Setting control rotation to false"));
 			ControlRotation(false);
 		}
 
@@ -380,30 +408,33 @@ void UTargetSystemComponent::TargetLockOff()
 
 void UTargetSystemComponent::CreateAndAttachTargetLockedOnWidgetComponent(AActor* TargetActor)
 {
-	if (!LockedOnWidgetClass)
+	if ((GetOwnerRole() == ROLE_AutonomousProxy && GetOwner()->GetRemoteRole() != ROLE_SimulatedProxy) || (GetOwnerRole() == ROLE_Authority && GetOwner()->GetRemoteRole() == ROLE_SimulatedProxy))
 	{
-		TS_LOG(Error, TEXT("TargetSystemComponent: Cannot get LockedOnWidgetClass, please ensure it is a valid reference in the Component Properties."));
-		return;
+		if (!LockedOnWidgetClass)
+		{
+			TS_LOG(Error, TEXT("TargetSystemComponent: Cannot get LockedOnWidgetClass, please ensure it is a valid reference in the Component Properties."));
+			return;
+		}
+
+		TargetLockedOnWidgetComponent = NewObject<UWidgetComponent>(TargetActor, MakeUniqueObjectName(TargetActor, UWidgetComponent::StaticClass(), FName("TargetLockOn")));
+		TargetLockedOnWidgetComponent->SetWidgetClass(LockedOnWidgetClass);
+
+		UMeshComponent* MeshComponent = TargetActor->FindComponentByClass<UMeshComponent>();
+		USceneComponent* ParentComponent = MeshComponent && LockedOnWidgetParentSocket != NAME_None ? MeshComponent : TargetActor->GetRootComponent();
+
+		if (IsValid(OwnerPlayerController))
+		{
+			TargetLockedOnWidgetComponent->SetOwnerPlayer(OwnerPlayerController->GetLocalPlayer());
+		}
+
+		TargetLockedOnWidgetComponent->ComponentTags.Add(FName("TargetSystem.LockOnWidget"));
+		TargetLockedOnWidgetComponent->SetWidgetSpace(EWidgetSpace::Screen);
+		TargetLockedOnWidgetComponent->SetupAttachment(ParentComponent, LockedOnWidgetParentSocket);
+		TargetLockedOnWidgetComponent->SetRelativeLocation(LockedOnWidgetRelativeLocation);
+		TargetLockedOnWidgetComponent->SetDrawSize(FVector2D(LockedOnWidgetDrawSize, LockedOnWidgetDrawSize));
+		TargetLockedOnWidgetComponent->SetVisibility(true);
+		TargetLockedOnWidgetComponent->RegisterComponent();
 	}
-
-	TargetLockedOnWidgetComponent = NewObject<UWidgetComponent>(TargetActor, MakeUniqueObjectName(TargetActor, UWidgetComponent::StaticClass(), FName("TargetLockOn")));
-	TargetLockedOnWidgetComponent->SetWidgetClass(LockedOnWidgetClass);
-
-	UMeshComponent* MeshComponent = TargetActor->FindComponentByClass<UMeshComponent>();
-	USceneComponent* ParentComponent = MeshComponent && LockedOnWidgetParentSocket != NAME_None ? MeshComponent : TargetActor->GetRootComponent();
-
-	if (IsValid(OwnerPlayerController))
-	{
-		TargetLockedOnWidgetComponent->SetOwnerPlayer(OwnerPlayerController->GetLocalPlayer());
-	}
-
-	TargetLockedOnWidgetComponent->ComponentTags.Add(FName("TargetSystem.LockOnWidget"));
-	TargetLockedOnWidgetComponent->SetWidgetSpace(EWidgetSpace::Screen);
-	TargetLockedOnWidgetComponent->SetupAttachment(ParentComponent, LockedOnWidgetParentSocket);
-	TargetLockedOnWidgetComponent->SetRelativeLocation(LockedOnWidgetRelativeLocation);
-	TargetLockedOnWidgetComponent->SetDrawSize(FVector2D(LockedOnWidgetDrawSize, LockedOnWidgetDrawSize));
-	TargetLockedOnWidgetComponent->SetVisibility(true);
-	TargetLockedOnWidgetComponent->RegisterComponent();
 }
 
 TArray<AActor*> UTargetSystemComponent::GetAllActorsOfClass(const TSubclassOf<AActor> ActorClass) const
@@ -638,4 +669,29 @@ bool UTargetSystemComponent::IsInViewport(const AActor* TargetActor) const
 	GetWorld()->GetGameViewport()->GetViewportSize(ViewportSize);
 
 	return ScreenLocation.X > 0 && ScreenLocation.Y > 0 && ScreenLocation.X < ViewportSize.X && ScreenLocation.Y < ViewportSize.Y;
+}
+
+void UTargetSystemComponent::ServerTargetLockOn_Implementation(AActor* TargetToLockOn)
+{
+	ClientTargetLockOn(TargetToLockOn);
+}
+
+void UTargetSystemComponent::ServerTargetLockOff_Implementation()
+{
+	TargetLockOff_Internal();
+	ClientTargetLockOff();
+}
+
+void UTargetSystemComponent::ClientTargetLockOn_Implementation(AActor* TargetToLockOn)
+{
+	// if (GetOwnerRole() >= ROLE_AutonomousProxy)
+	// 	return;
+	TargetLockOn_Internal(TargetToLockOn);
+}
+
+void UTargetSystemComponent::ClientTargetLockOff_Implementation()
+{
+	// if (GetOwnerRole() >= ROLE_AutonomousProxy)
+	// 	return;
+	TargetLockOff_Internal();
 }
